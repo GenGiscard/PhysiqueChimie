@@ -923,6 +923,7 @@ function viewTechno(b){
           <li>Colle avec <b>Ctrl+V</b> puis appuie sur <b>Entrée</b>. La première fois, le navigateur demande de taper <b>autoriser le collage</b> (ou <b>allow pasting</b>) avant de recoller.</li>
           <li>Vérifie les cases surlignées en vert, puis clique sur la <b>disquette</b> d\u2019École Directe pour enregistrer.</li>
         </ol>
+        ${ui.edMissing && ui.edMissing.length ? `<p class="warn">Sans appréciation dans l\u2019appli, leur case restera vide : ${esc(ui.edMissing.join(", "))}.</p>` : ""}
         ${ui.edOver ? `<p class="warn">${ui.edOver} appréciation${ui.edOver>1?"s dépassent":" dépasse"} 200 caractères : raccourcis-la avant, sinon École Directe risque de la couper.</p>` : ""}
       </div>` : ""}
       <div class="gen-bar">
@@ -1305,7 +1306,8 @@ function edLabel(c){
 /* Script autonome à coller dans la console de la page Appréciations d'École Directe.
    Il associe chaque zone de saisie au nom de l'élève sur sa ligne, remplit sans enregistrer, et laisse vérifier. */
 function edScript(items){
-  const data = items.map(x=>({n:x.nom+" "+x.prenom, k:norm(x.nom+x.prenom).replace(/[^a-z0-9]/g,""), t:x.appTechno.trim()}));
+  const kk = v => norm(v).replace(/[^a-z0-9]/g,"");
+  const data = items.map(x=>({n:x.nom+" "+x.prenom, k:kk(x.nom+x.prenom), nk:kk(x.nom), pk:kk(x.prenom), t:x.appTechno.trim()}));
   const cls = edLabel(state.cur.cls);
   return `/* Conseils de classe - appréciations ${state.cur.cls} ${state.cur.tri} - remplit sans enregistrer */
 (function(){
@@ -1313,7 +1315,28 @@ var CLASSE = ${JSON.stringify(cls)};
 var ECRASER = false; /* true : remplace aussi les appréciations déjà saisies */
 var DATA = ${JSON.stringify(data)};
 var K = function(s){ return String(s||"").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,""); };
-var T = function(e){ return e.innerText || e.textContent || ""; };
+/* texte de la ligne + bulles d'aide (title) : École Directe coupe les noms longs à l'affichage */
+var T = function(e){ var s = e.innerText || e.textContent || ""; Array.prototype.forEach.call(e.querySelectorAll ? e.querySelectorAll("[title]") : [], function(x){ s += " " + x.getAttribute("title"); }); return s; };
+/* nom complet trouvé, sinon nom + début du prénom (prénom coupé par « ... ») */
+var match = function(txt){
+  var best = null, bestScore = 0, tie = false;
+  DATA.forEach(function(d){
+    if(used[d.k]) return;
+    var sc = 0;
+    if(txt.indexOf(d.k) >= 0) sc = 100000 + d.k.length;
+    else {
+      var i = txt.indexOf(d.nk);
+      if(i >= 0 && d.nk.length >= 2){
+        var rest = txt.slice(i + d.nk.length), L = 0;
+        while(L < d.pk.length && rest.charAt(L) === d.pk.charAt(L)) L++;
+        if(L >= Math.min(3, d.pk.length)) sc = d.nk.length*100 + L;
+      }
+    }
+    if(sc > bestScore){ best = d; bestScore = sc; tie = false; }
+    else if(sc && sc === bestScore && best && best.k !== d.k) tie = true;
+  });
+  return tie ? null : best;
+};
 var page = K(T(document.body));
 if(page.indexOf(K(CLASSE))<0 && !confirm("La page ne semble pas afficher la classe " + CLASSE + ". Continuer quand même ?")) return;
 var setVal = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
@@ -1324,9 +1347,7 @@ tas.forEach(function(ta){
   while(el && el !== document.body && !hit){
     el = el.parentElement;
     if(!el || el.querySelectorAll("textarea").length > 1) break;
-    var txt = K(T(el)), best = null;
-    DATA.forEach(function(d){ if(!used[d.k] && txt.indexOf(d.k) >= 0 && (!best || d.k.length > best.k.length)) best = d; });
-    hit = best;
+    hit = match(K(T(el)));
   }
   if(!hit){ noRow++; return; }
   used[hit.k] = true;
@@ -1338,9 +1359,12 @@ tas.forEach(function(ta){
   filled++;
 });
 var missing = DATA.filter(function(d){ return !used[d.k]; }).map(function(d){ return d.n; });
+var empty = tas.filter(function(ta){ return ta.offsetParent !== null && !ta.value.trim(); });
+empty.forEach(function(ta){ ta.style.outline = "3px dashed #e0a000"; });
 var msg = filled + " appréciation(s) remplie(s)." +
   (kept ? "\\n" + kept + " déjà saisie(s), laissée(s) telle(s) quelle(s) (encadrée(s) en orange)." : "") +
   (missing.length ? "\\nÉlèves non trouvés sur la page : " + missing.join(", ") : "") +
+  (empty.length ? "\\n" + empty.length + " case(s) encore vide(s), encadrée(s) en pointillés orange : élève(s) sans appréciation dans l\u2019appli." : "") +
   "\\n\\nVérifiez puis cliquez sur la disquette pour enregistrer.";
 console.log(msg); alert(msg);
 })();`;
@@ -1753,7 +1777,8 @@ function act(el){
       if(!items.length){ toast("Aucune appréciation à transférer"); break; }
       const over = items.filter(x=>x.appTechno.length>APP_LIMIT).length;
       copyText(edScript(items), "Script École Directe");
-      ui.edHelp = true; ui.edOver = over; render();
+      ui.edHelp = true; ui.edOver = over;
+      ui.edMissing = sorted(b.students,"nom").filter(x=>!x.appTechno.trim()).map(full); render();
       break; }
     case "ed-close": ui.edHelp = false; render(); break;
     case "copy-all-app": copyText(sorted(b.students,"nom").map(s=>`${s.nom}\t${s.prenom}\t${fmt(s.techno)}\t${s.appTechno.replace(/[\t\r\n]+/g," ")}`).join("\n"), "Appréciations physique-chimie"); break;
